@@ -1,0 +1,133 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mega-Sena · Painel de dezenas</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf5f1;color:#14342a;font:16px system-ui}main{max-width:860px;margin:auto;padding:18px}header,section{padding:18px;margin-bottom:14px;border-radius:14px;background:white}header{background:#064c37;color:white}h1,h2{margin:0 0 10px}button,input{font:inherit}button{padding:9px 13px;border:1px solid #39866c;border-radius:8px;background:#e6f6ee;color:#124632;cursor:pointer;margin:3px}button[aria-pressed=true],.ball{background:#086446;color:white}.ball{display:inline-grid;place-items:center;width:2.6em;height:2.6em;border-radius:50%;margin:4px;font-weight:bold}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:16px}.ticket{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:4px;max-width:510px}.ticket button{margin:0;padding:8px 0}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #d8e5df;padding:5px}details{margin-top:12px}label{display:block;margin:10px 0}@media(max-width:390px){.ticket{grid-template-columns:repeat(6,1fr)}}
+</style>
+<main><header><h1>Mega-Sena</h1>Histórico, frequência das dezenas e cartão de jogo</header>
+<section><h2>Último sorteio</h2><p id="latest">Nenhum concurso carregado.</p><div id="balls"></div>
+<button id="refresh">Atualizar pela Caixa</button><p id="sync" role="status"></p>
+<details><summary>Importar histórico oficial</summary><p>Baixe a planilha na seção <b>Download de resultados</b> do <a href="https://loterias.caixa.gov.br/Paginas/Mega-Sena.aspx" target="_blank" rel="noopener">Portal Loterias Caixa</a>.</p><label>Planilha da Caixa (.xlsx)<input id="file" type="file" accept=".xlsx"></label></details></section>
+<section><h2>Frequência das dezenas</h2><p id="coverage"></p><div class="grid"><div><h3>Mais sorteadas</h3><table><thead><tr><th>Dezena</th><th>Vezes</th></tr></thead><tbody id="most"></tbody></table></div><div><h3>Menos sorteadas</h3><table><thead><tr><th>Dezena</th><th>Vezes</th></tr></thead><tbody id="least"></tbody></table></div></div><p><small>Frequência histórica não altera a chance no próximo sorteio.</small></p></section>
+<section><h2>Cartão de jogo</h2><p>Marque seis dezenas ou gere um jogo aleatório. Este cartão é para conferência pessoal.</p><div id="ticket" class="ticket"></div><p id="selection" role="status"></p><button id="random">Gerar jogo</button><button id="clear">Limpar cartão</button><button id="copy">Copiar dezenas</button><p id="match"></p></section></main>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.mini.min.js"></script>
+<script>
+const el=id=>document.getElementById(id);
+const pad=n=>String(n).padStart(2,'0');
+const api='https://servicebus2.caixa.gov.br/portaldeloterias/api/megasena';
+const key='mega-sena-historico-v1';
+const numbers=Array.from({length:60},(_,i)=>i+1);
+const draws=new Map();
+const selected=new Set();
+let latestOfficial=0, busy=false;
+function record(id,date,values){
+  const n=Number(id), balls=values.map(Number);
+  if(!Number.isSafeInteger(n)||n<1||balls.length!==6||new Set(balls).size!==6||balls.some(x=>!Number.isInteger(x)||x<1||x>60)) return null;
+  return {n,date:String(date||''),balls:balls.sort((a,b)=>a-b)};
+}
+try{for(const draw of JSON.parse(localStorage.getItem(key)||'[]')){
+  const item=record(draw.n,draw.date,draw.balls);
+  if(item) draws.set(item.n,item);
+}}catch{}
+function save(){
+  try{localStorage.setItem(key,JSON.stringify([...draws.values()]));return true;}catch{return false;}
+}
+function newest(){return [...draws.values()].reduce((best,item)=>!best||item.n>best.n?item:best,null);}
+function render(){
+  const last=newest();
+  el('latest').textContent=last?'Concurso '+last.n+' · '+(last.date||'data indisponível'):'Nenhum concurso carregado.';
+  el('balls').replaceChildren(...(last?.balls||[]).map(n=>{const b=document.createElement('span');b.className='ball';b.textContent=pad(n);return b;}));
+  const through=Math.max(latestOfficial,last?.n||0);
+  el('coverage').textContent=draws.size
+    ?draws.size+' concursos carregados · '+(draws.size===through?'sem lacunas até o concurso '+through:'histórico parcial · '+(through-draws.size)+' concursos faltando até '+through)
+    :'Importe a planilha oficial para calcular o ranking histórico.';
+  const counts=Array(61).fill(0);
+  for(const draw of draws.values()) for(const n of draw.balls) counts[n]++;
+  for(const [id,sign] of [['most',-1],['least',1]]){
+    const order=[...numbers].sort((a,b)=>sign*(counts[a]-counts[b])||a-b);
+    const cutoff=counts[order[9]];
+    const top=id==='most'?order.filter(n=>counts[n]>=cutoff):order.filter(n=>counts[n]<=cutoff);
+    el(id).replaceChildren(...(draws.size?top:[]).map(n=>{
+      const row=document.createElement('tr');
+      row.insertCell().textContent=pad(n);row.insertCell().textContent=counts[n];return row;
+    }));
+  }
+  renderTicket();
+}
+async function fetchDraw(id=''){
+  const response=await fetch(api+(id?'/'+id:''),{cache:'no-store',signal:AbortSignal.timeout(12000)});
+  if(!response.ok)throw Error('Resultado indisponível');
+  const data=await response.json();
+  const item=record(data.numero,data.dataApuracao,data.listaDezenas||[]);
+  if(!item||(id&&item.n!==id))throw Error('Resultado inválido');
+  return item;
+}
+async function sync(){
+  if(busy)return;
+  busy=true;el('refresh').disabled=true;el('file').disabled=true;
+  el('sync').textContent='Consultando a Caixa…';
+  try{
+    const last=await fetchDraw();
+    latestOfficial=last.n;draws.set(last.n,last);render();
+    // Recover recent gaps without sending thousands of requests to the portal.
+    const missing=[];
+    for(let n=Math.max(1,last.n-24);n<last.n;n++)if(!draws.has(n))missing.push(n);
+    if(draws.size>1)for(const n of missing)draws.set(n,await fetchDraw(n));
+    el('sync').textContent='Último concurso consultado na Caixa.';
+  }catch{
+    el('sync').textContent='A consulta automática à Caixa ficou indisponível. Você pode importar a planilha oficial atualizada.';
+  }finally{
+    if(!save())el('sync').textContent+=' O navegador não conseguiu guardar o histórico.';
+    busy=false;el('refresh').disabled=false;el('file').disabled=false;render();
+  }
+}
+el('file').onchange=async event=>{
+  const file=event.currentTarget.files[0];if(!file||busy)return;
+  busy=true;el('refresh').disabled=true;el('file').disabled=true;
+  try{
+    if(!window.XLSX)throw Error('O leitor de planilhas não carregou. Confira a conexão e reabra o app.');
+    const book=XLSX.read(await file.arrayBuffer());
+    const rows=XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]],{header:1,raw:false});
+    const normalize=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+    const h=rows.findIndex(row=>row.some(v=>normalize(v)==='concurso')&&row.some(v=>/^(bola|dezena)0?1$/.test(normalize(v))));
+    if(h<0)throw Error('Cabeçalho da planilha da Mega-Sena não encontrado.');
+    const header=rows[h].map(normalize);
+    const id=header.indexOf('concurso'), date=header.findIndex(x=>x.startsWith('data'));
+    const cols=Array.from({length:6},(_,i)=>header.findIndex(x=>new RegExp('^(bola|dezena)0?'+(i+1)+'$').test(x)));
+    if(cols.includes(-1))throw Error('A planilha precisa conter as seis colunas de dezenas.');
+    const imported=new Map();
+    for(const row of rows.slice(h+1)){
+      const item=record(row[id],row[date],cols.map(i=>row[i]));
+      if(item)imported.set(item.n,item);
+    }
+    if(!imported.size)throw Error('Nenhum concurso válido encontrado.');
+    for(const [n,item] of imported)draws.set(n,item);
+    el('sync').textContent=imported.size+' concursos lidos da planilha.'+(save()?'':' O navegador não conseguiu guardar o histórico.');
+    render();
+  }catch(error){el('sync').textContent=error.message;}
+  finally{busy=false;el('refresh').disabled=false;el('file').disabled=false;el('file').value='';}
+};
+const ticketButtons=numbers.map(n=>{
+  const b=document.createElement('button');b.textContent=pad(n);
+  b.onclick=()=>{if(selected.has(n))selected.delete(n);else if(selected.size<6)selected.add(n);renderTicket();};return b;
+});
+el('ticket').append(...ticketButtons);
+function renderTicket(){
+  ticketButtons.forEach((b,i)=>b.setAttribute('aria-pressed',String(selected.has(i+1))));
+  el('selection').textContent=selected.size+' de 6 marcadas · '+[...selected].sort((a,b)=>a-b).map(pad).join(' ');
+  const last=newest();
+  el('match').textContent=last&&selected.size===6?'Conferência com concurso '+last.n+' · '+last.balls.filter(n=>selected.has(n)).length+' acerto(s).':'';
+  el('copy').disabled=selected.size!==6;
+}
+el('clear').onclick=()=>{selected.clear();renderTicket();};
+el('random').onclick=()=>{
+  selected.clear();const pool=[...numbers];
+  while(selected.size<6)selected.add(pool.splice(Math.floor(Math.random()*pool.length),1)[0]);
+  renderTicket();
+};
+el('copy').onclick=async()=>{
+  try{await navigator.clipboard.writeText([...selected].sort((a,b)=>a-b).map(pad).join(' '));el('selection').textContent+=' · Copiado';}
+  catch{el('selection').textContent+=' · Selecione as dezenas para copiar manualmente.';}
+};
+el('refresh').onclick=sync;
+render();sync();
+setInterval(()=>{if(!document.hidden)sync();},15*60*1000);
+</script></html>
