@@ -6,6 +6,14 @@
 <section><h2>Último sorteio</h2><p id="latest">Nenhum concurso carregado.</p><div id="balls"></div>
 <button id="refresh">Atualizar pela Caixa</button><p id="sync" role="status"></p>
 <details><summary>Importar histórico oficial</summary><p>Baixe a planilha na seção <b>Download de resultados</b> do <a href="https://loterias.caixa.gov.br/Paginas/Mega-Sena.aspx" target="_blank" rel="noopener">Portal Loterias Caixa</a>.</p><label>Planilha da Caixa (.xlsx)<input id="file" type="file" accept=".xlsx"></label></details></section>
+<section><h2>Consultar concurso</h2>
+<form id="drawSearch">
+<label for="drawNumber">Número do concurso</label>
+<input id="drawNumber" type="number" inputmode="numeric" min="1" step="1" placeholder="Ex.: 3081" required>
+<button type="submit">Consultar</button>
+</form>
+<div role="status"><p id="drawResult">Digite o número de um concurso do histórico.</p><div id="drawBalls"></div></div>
+</section>
 <section><h2>Frequência das dezenas</h2><p id="coverage"></p><div class="grid"><div><h3>Mais sorteadas</h3><table><thead><tr><th>Dezena</th><th>Vezes</th></tr></thead><tbody id="most"></tbody></table></div><div><h3>Menos sorteadas</h3><table><thead><tr><th>Dezena</th><th>Vezes</th></tr></thead><tbody id="least"></tbody></table></div></div><p><small>Frequência histórica não altera a chance no próximo sorteio.</small></p></section>
 <section><h2>Cartão de jogo</h2><p>Marque seis dezenas ou gere um jogo aleatório. Este cartão é para conferência pessoal.</p><div id="ticket" class="ticket"></div><p id="selection" role="status"></p><button id="random">Gerar jogo</button><button id="clear">Limpar cartão</button><button id="copy">Copiar dezenas</button><p id="match"></p></section></main>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.mini.min.js"></script>
@@ -31,10 +39,35 @@ function save(){
   try{localStorage.setItem(key,JSON.stringify([...draws.values()]));return true;}catch{return false;}
 }
 function newest(){return [...draws.values()].reduce((best,item)=>!best||item.n>best.n?item:best,null);}
+function renderBalls(id, draw){
+  el(id).replaceChildren(...(draw?.balls || []).map(n=>{
+    const ball=document.createElement('span');
+    ball.className='ball';
+    ball.textContent=pad(n);
+    return ball;
+  }));
+}
+let searchedDraw=null;
+function renderDrawSearch(){
+  if(searchedDraw===null)return;
+  const draw=draws.get(searchedDraw);
+  el('drawResult').textContent=draw
+    ?'Concurso '+draw.n+' · '+(draw.date||'data indisponível')
+    :'Concurso '+searchedDraw+' não encontrado no histórico. Importe uma planilha que inclua esse concurso.';
+  renderBalls('drawBalls',draw);
+}
+el('drawSearch').onsubmit=event=>{
+  event.preventDefault();
+  const number=el('drawNumber').valueAsNumber;
+  if(!Number.isSafeInteger(number)||number<1)return;
+  searchedDraw=number;
+  renderDrawSearch();
+};
 function render(){
   const last=newest();
   el('latest').textContent=last?'Concurso '+last.n+' · '+(last.date||'data indisponível'):'Nenhum concurso carregado.';
-  el('balls').replaceChildren(...(last?.balls||[]).map(n=>{const b=document.createElement('span');b.className='ball';b.textContent=pad(n);return b;}));
+  renderBalls('balls',last);
+  renderDrawSearch();
   const through=Math.max(latestOfficial,last?.n||0);
   el('coverage').textContent=draws.size
     ?draws.size+' concursos carregados · '+(draws.size===through?'sem lacunas até o concurso '+through:'histórico parcial · '+(through-draws.size)+' concursos faltando até '+through)
